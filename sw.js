@@ -2,7 +2,7 @@
 // Guarda la app en el iPhone para que abra aunque no haya señal
 // o aunque el sitio donde la publicaste esté caído.
 // Los datos del clima NO pasan por aquí: van directo de Open-Meteo y NOAA.
-const CACHE = 'vuelo-v1';
+const CACHE = 'vuelo-v2';
 const APP = [
   './',
   './index.html',
@@ -13,7 +13,12 @@ const APP = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(APP)).then(() => self.skipWaiting()));
+  // cache: 'reload' = baja los archivos frescos del servidor, sin usar copias viejas
+  e.waitUntil(
+    caches.open(CACHE)
+      .then((c) => c.addAll(APP.map((u) => new Request(u, { cache: 'reload' }))))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', (e) => {
@@ -38,7 +43,7 @@ self.addEventListener('fetch', (e) => {
       : await cache.match(req, { ignoreSearch: true });
 
     // Primero lo guardado (abre al instante y sin señal); por detrás, busca la versión nueva.
-    const red = fetch(req).then((res) => {
+    const red = fetch(esPagina ? './index.html' : req.url, { cache: 'no-cache' }).then((res) => {
       if (res && res.ok) {
         const copia = res.clone();
         cache.put(esPagina ? './index.html' : req, copia);

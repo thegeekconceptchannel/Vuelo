@@ -130,6 +130,26 @@ input{font:inherit;font-size:16px;padding:10px 12px;border-radius:12px;border:1p
 .campo .u{width:44px;color:var(--ink2);font-size:14px}
 .res{padding:10px 4px;border-bottom:1px solid var(--grid);cursor:pointer}
 .res small{color:var(--muted)}
+.kpi.dir{cursor:pointer;-webkit-tap-highlight-color:transparent}
+.kpi.dir:active{transform:scale(.98)}
+.accion{font-size:13px;font-weight:700;color:var(--s1);margin-top:3px}
+.dial-caja{display:flex;justify-content:center;margin:6px 0 4px}
+.dial{display:block;width:min(270px,78vw);height:auto}
+.dial .fondo{fill:var(--page);stroke:var(--axis);stroke-width:1.5}
+.dial .marca{stroke:var(--muted);stroke-width:2;stroke-linecap:round}
+.dial .marca.fuerte{stroke:var(--ink2);stroke-width:3}
+.dial .letra{fill:var(--ink2);font-size:18px;font-weight:800;text-anchor:middle}
+.dial .letra.norte{fill:var(--crit)}
+.dial .marca.norte{stroke:var(--crit);stroke-width:4}
+.dial .flecha-viento{stroke:var(--s1);stroke-width:7;stroke-linecap:round;fill:none}
+.dial .punta{fill:var(--s1)}
+.dial .cola{fill:var(--page);stroke:var(--s1);stroke-width:4}
+.dial .guia{fill:var(--ink)}
+.bru-dato{text-align:center;font-size:17px;margin:4px 0}
+.bru-dato b{font-size:22px}
+.bru-estado{text-align:center;font-size:15px;color:var(--ink2);min-height:22px;margin:6px 0}
+.bru-estado.alerta{color:var(--ink);background:var(--warn-bg);border-radius:12px;padding:8px 10px}
+.banner{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0;padding:10px 12px;border-radius:14px;background:var(--good-bg);font-size:15px}
 </style>
 </head>
 <body>
@@ -139,6 +159,7 @@ input{font:inherit;font-size:16px;padding:10px 12px;border-radius:12px;border:1p
     <button id="refrescar" class="btn-ic" type="button" aria-label="Actualizar"></button>
     <button id="ajustesBtn" class="btn-ic" type="button" aria-label="Ajustes"></button>
   </header>
+  <div id="nuevaVersion" class="banner" hidden></div>
   <div id="estado" class="estado" aria-live="polite"></div>
   <nav id="filtros" aria-label="Perfil y altura">
     <div class="seg" id="perfiles" role="radiogroup" aria-label="Perfil de dron"></div>
@@ -182,13 +203,14 @@ input{font:inherit;font-size:16px;padding:10px 12px;border-radius:12px;border:1p
 
 <dialog id="dlgLugares" aria-label="Lugares"><div class="dlg" id="dlgLugaresCont"></div></dialog>
 <dialog id="dlgAjustes" aria-label="Ajustes"><div class="dlg" id="dlgAjustesCont"></div></dialog>
+<dialog id="dlgBrujula" aria-label="Brújula de viento"><div class="dlg" id="dlgBrujulaCont"></div></dialog>
 
 <noscript><p style="padding:16px">Esta app necesita JavaScript activado.</p></noscript>
 
 <script>
 (() => {
 'use strict';
-const VERSION = '1.0';
+const VERSION = '1.1';
 const KP_PRON = 'https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json';
 const KP_1M = 'https://services.swpc.noaa.gov/json/planetary_k_index_1m.json';
 const HORA = 3600e3;
@@ -510,9 +532,24 @@ function idxAhora(hs) {
   for (let i = 0; i < hs.length; i++) { if (hs[i].t <= now) k = i; else break; }
   return k;
 }
-function kpAhora(kp, h0) {
-  if (kp && kp.now && Date.now() - kp.now.t < 3 * HORA) return kp.now.kp;
-  return h0 ? h0.kp : null;
+function bloqueKp(rows, t) {
+  if (!rows || !rows.length) return null;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].t <= t) return t < rows[i].t + 3 * HORA ? rows[i] : null;
+  }
+  return null;
+}
+function antig(t) {
+  const m = Math.max(0, Math.round((Date.now() - t) / 60000));
+  return m < 60 ? `${m} min` : `${Math.round(m / 60)} h`;
+}
+// Kp de ahora: el estimado minuto a minuto de la NOAA o el del bloque de 3 horas; si difieren, el mayor.
+function kpActual(kp) {
+  const ya = kp && kp.now && Date.now() - kp.now.t < 3 * HORA ? kp.now : null;
+  const bl = bloqueKp(kp && kp.fc, Date.now());
+  if (ya && (!bl || ya.kp >= bl.kp)) return { v: ya.kp, fuente: `NOAA · hace ${antig(ya.t)}` };
+  if (bl) return { v: bl.kp, fuente: `NOAA · ${hhmm(bl.t)}–${hhmm(bl.t + 3 * HORA)}` };
+  return { v: null, fuente: S.errKp ? 'sin conexión con la NOAA' : '' };
 }
 
 // ---------- pintado ----------
@@ -591,18 +628,25 @@ function tarjeta(lbl, val, uni, sub, cls) {
     h('div', { class: 'val' }, val, uni ? h('small', { text: uni }) : null),
     sub ? h('div', { class: 'sub', text: sub }) : null);
 }
-function pintarKpis(x, kpNow, p) {
+function pintarKpis(x, kpi, p) {
+  const kpNow = kpi.v;
   const k = $('#kpis'); k.textContent = '';
   const alturas = [['10 m', x.w10], ['80 m', x.w80], ['120 m', x.w120]].filter((a) => a[1] != null).map((a) => `${a[0]}: ${fv(a[1])}`).join(' · ');
   const kpTxt = kpNow == null ? 'sin dato' : kpNow >= 5 ? 'tormenta geomagnética' : kpNow >= 4 ? 'activo' : 'tranquilo';
   k.append(
     tarjeta(x.sinAlt ? 'Viento a 10 m' : `Viento a ${p.alt} m`, fv(x.w), uv(), x.sinAlt ? `sin dato a ${p.alt} m; muestro el de 10 m` : alturas),
     tarjeta('Ráfagas', fv(x.g), uv(), 'medidas a 10 m'),
-    h('div', { class: 'kpi dir' },
+    h('div', { class: 'kpi dir', role: 'button', tabindex: '0', 'aria-label': 'Abrir la brújula de viento', onclick: abrirBrujula,
+      onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); abrirBrujula(); } } },
       h('div', { class: 'lbl', text: 'Dirección' }),
       h('div', { class: 'val' }, flecha(x.d, 30), h('span', { text: rumbo(x.d) })),
-      h('div', { class: 'sub', text: x.d == null ? '' : `viene del ${rumbo(x.d)} (${Math.round(x.d)}°)` })),
-    tarjeta('Índice Kp', fkp(kpNow), '', kpTxt),
+      h('div', { class: 'sub', text: x.d == null ? '' : `viene del ${rumbo(x.d)} (${Math.round(x.d)}°)` }),
+      h('div', { class: 'accion', text: 'Brújula en vivo ›' })),
+    h('div', { class: 'kpi' },
+      h('div', { class: 'lbl', text: 'Índice Kp' }),
+      h('div', { class: 'val' }, fkp(kpNow)),
+      h('div', { class: 'sub', text: kpTxt }),
+      kpi.fuente ? h('div', { class: 'sub', text: kpi.fuente }) : null),
     tarjeta('Temperatura', x.temp == null ? '–' : String(Math.round(x.temp)), '°C', ''),
     tarjeta('Lluvia', x.lluvia == null ? '–' : String(Math.round(x.lluvia)), '%', 'probabilidad'),
     tarjeta('Nubes', x.nubes == null ? '–' : String(Math.round(x.nubes)), '%', ''),
@@ -892,14 +936,16 @@ function render() {
       h('button', { class: 'boton primario', type: 'button', text: 'Actualizar', onclick: () => actualizar() }));
     return;
   }
-  const kn = kpAhora(kp, hs[i0]);
-  hs[i0].kp = kn;
+  const kpi = kpActual(kp);
+  if (kpi.v != null) hs[i0].kp = kpi.v;
   for (const x of hs) x.ev = evaluar(x, p);
+  S.ahora = hs[i0];
   $('#vacio').hidden = true;
   $('#contenido').hidden = false;
   const sol = datosSol(data);
   pintarVeredicto(hs, i0, p, sol);
-  pintarKpis(hs[i0], kn, p);
+  pintarKpis(hs[i0], kpi, p);
+  if ($('#dlgBrujula').open) textosBrujula();
   pintarVentanas(hs, i0, p);
   $('#tituloViento').textContent = 'Viento próximas 24 horas';
   const ley = $('#leyendaViento'); ley.textContent = '';
@@ -991,6 +1037,138 @@ function abrirLugares() {
   abrirDialogo(d);
 }
 
+// ---------- brújula de viento ----------
+// La flecha apunta hacia DONDE VA el viento, girando con el iPhone.
+const BR = { activa: false, ev: null, fn: null, sx: null, sy: null, rumbo: null, precision: null, raf: 0, ultimo: 0 };
+function dialBrujula() {
+  const C = 140, R = 128;
+  const svg = s('svg', { viewBox: '0 0 280 280', class: 'dial', role: 'img', 'aria-label': 'Brújula con la dirección del viento' });
+  svg.append(s('circle', { cx: C, cy: C, r: R, class: 'fondo' }));
+  const rosa = s('g', { id: 'bruRosa' });
+  for (let a = 0; a < 360; a += 15) {
+    const largo = a % 90 === 0 ? 16 : a % 45 === 0 ? 11 : 6;
+    const rad = a * Math.PI / 180, x1 = C + (R - 4) * Math.sin(rad), y1 = C - (R - 4) * Math.cos(rad);
+    const x2 = C + (R - 4 - largo) * Math.sin(rad), y2 = C - (R - 4 - largo) * Math.cos(rad);
+    rosa.append(s('line', { x1, y1, x2, y2, class: 'marca' + (a === 0 ? ' fuerte norte' : a % 90 === 0 ? ' fuerte' : '') }));
+  }
+  BR.letras = [];
+  for (const [a, t] of [[0, 'N'], [90, 'E'], [180, 'S'], [270, 'O']]) {
+    const rad = a * Math.PI / 180, lx = C + (R - 38) * Math.sin(rad), ly = C - (R - 38) * Math.cos(rad);
+    const el = s('text', { x: lx, y: ly + 6, class: 'letra' + (a === 0 ? ' norte' : '') }, t);
+    rosa.append(el);
+    BR.letras.push([el, lx, ly]);
+  }
+  svg.append(rosa);
+  const fl = s('g', { id: 'bruFlecha' });
+  fl.append(s('line', { x1: C, y1: C + 78, x2: C, y2: C - 58, class: 'flecha-viento' }));
+  fl.append(s('path', { d: `M${C} ${C - 90} L${C + 20} ${C - 52} L${C - 20} ${C - 52} Z`, class: 'punta' }));
+  fl.append(s('circle', { cx: C, cy: C + 84, r: 8, class: 'cola' }));
+  svg.append(fl);
+  svg.append(s('path', { d: `M${C} 1 L${C + 8} 13 L${C - 8} 13 Z`, class: 'guia' }));
+  return svg;
+}
+function orientarDial() {
+  BR.raf = 0;
+  const rosa = $('#bruRosa'), fl = $('#bruFlecha');
+  if (!rosa || !fl) return;
+  const H = BR.activa && BR.rumbo != null ? BR.rumbo : 0;
+  const d = S.ahora && S.ahora.d != null ? S.ahora.d : null;
+  rosa.setAttribute('transform', `rotate(${(-H).toFixed(1)} 140 140)`);
+  for (const [el, lx, ly] of BR.letras || []) el.setAttribute('transform', `rotate(${H.toFixed(1)} ${lx.toFixed(1)} ${ly.toFixed(1)})`);
+  fl.setAttribute('visibility', d == null ? 'hidden' : 'visible');
+  if (d != null) fl.setAttribute('transform', `rotate(${((d + 180 - H) % 360).toFixed(1)} 140 140)`);
+  const ahora = Date.now();
+  if (ahora - BR.ultimo > 400) { BR.ultimo = ahora; estadoBrujula(); }
+}
+function pedirPintadoDial() { if (!BR.raf) BR.raf = requestAnimationFrame(orientarDial); }
+function leerOrientacion(e) {
+  let hd = null;
+  if (typeof e.webkitCompassHeading === 'number' && isFinite(e.webkitCompassHeading)) {
+    hd = e.webkitCompassHeading;
+    BR.precision = typeof e.webkitCompassAccuracy === 'number' ? e.webkitCompassAccuracy : null;
+  } else if (e.alpha != null && (e.absolute || BR.ev === 'deviceorientationabsolute')) {
+    hd = (360 - e.alpha) % 360;
+  }
+  if (hd == null) return;
+  const giro = (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0);
+  hd = (hd + giro + 360) % 360;
+  const r = hd * Math.PI / 180;
+  if (BR.sx === null) { BR.sx = Math.cos(r); BR.sy = Math.sin(r); }
+  else { BR.sx = BR.sx * 0.8 + Math.cos(r) * 0.2; BR.sy = BR.sy * 0.8 + Math.sin(r) * 0.2; }
+  let a = Math.atan2(BR.sy, BR.sx) * 180 / Math.PI;
+  if (a < 0) a += 360;
+  BR.rumbo = a;
+  pedirPintadoDial();
+}
+function encenderBrujula() {
+  const empezar = () => {
+    apagarBrujula();
+    BR.ev = (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function')
+      ? 'deviceorientation'
+      : ('ondeviceorientationabsolute' in window ? 'deviceorientationabsolute' : 'deviceorientation');
+    BR.fn = leerOrientacion;
+    window.addEventListener(BR.ev, BR.fn, true);
+    BR.activa = true; BR.sx = BR.sy = null; BR.rumbo = null;
+    textosBrujula();
+    setTimeout(() => { if (BR.activa && BR.rumbo == null) estadoBrujula('Este equipo no está enviando la brújula. En el iPhone, sostenlo plano unos segundos.', true); }, 3000);
+  };
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    DeviceOrientationEvent.requestPermission().then((r) => {
+      if (r === 'granted') empezar();
+      else estadoBrujula('El iPhone no dio permiso para la brújula. Cierra la app del todo y ábrela de nuevo para que te lo vuelva a pedir.', true);
+    }).catch(() => estadoBrujula('No se pudo pedir el permiso de la brújula.', true));
+  } else if (typeof DeviceOrientationEvent !== 'undefined') empezar();
+  else estadoBrujula('Este navegador no tiene brújula.', true);
+}
+function apagarBrujula() {
+  if (BR.fn && BR.ev) window.removeEventListener(BR.ev, BR.fn, true);
+  BR.activa = false; BR.fn = null; BR.rumbo = null;
+  if (BR.raf) { cancelAnimationFrame(BR.raf); BR.raf = 0; }
+}
+function estadoBrujula(msg, alerta) {
+  const e = $('#bruEstado');
+  if (!e) return;
+  let t = msg, al = !!alerta;
+  if (!t) {
+    if (!BR.activa) t = 'Brújula apagada: el norte está arriba.';
+    else if (BR.rumbo == null) t = 'Leyendo la brújula…';
+    else if (BR.precision != null && (BR.precision < 0 || BR.precision > 25)) { t = 'La brújula está imprecisa: mueve el iPhone dibujando un 8 en el aire.'; al = true; }
+    else t = `Tu iPhone apunta al ${rumbo(BR.rumbo)} (${Math.round(BR.rumbo)}°).`;
+  }
+  e.textContent = t;
+  e.classList.toggle('alerta', al);
+}
+function textosBrujula() {
+  const x = S.ahora, p = P();
+  const dat = $('#bruDatos'), btn = $('#bruBoton');
+  if (dat) {
+    dat.textContent = '';
+    if (x && x.d != null) {
+      dat.append(h('div', { class: 'bru-dato' }, 'Viene del ', h('b', { text: rumbo(x.d) }), ' y va al ', h('b', { text: rumbo(x.d + 180) })),
+        h('div', { class: 'bru-dato', text: `Viento ${fv(x.w)} · ráfagas ${fv(x.g)} ${uv()}` }));
+    } else dat.append(h('div', { class: 'bru-dato', text: 'Sin pronóstico de dirección todavía.' }));
+  }
+  if (btn) {
+    btn.textContent = BR.activa ? 'Apagar brújula' : 'Activar brújula';
+    btn.className = 'boton' + (BR.activa ? '' : ' primario');
+  }
+  pedirPintadoDial();
+  estadoBrujula();
+}
+function abrirBrujula() {
+  const d = $('#dlgBrujula'), c = $('#dlgBrujulaCont');
+  c.textContent = '';
+  c.append(cabDialogo('Brújula de viento', d),
+    h('div', { class: 'dial-caja' }, dialBrujula()),
+    h('div', { id: 'bruDatos' }),
+    h('div', { id: 'bruEstado', class: 'bru-estado', 'aria-live': 'polite' }),
+    h('button', { id: 'bruBoton', class: 'boton primario', type: 'button', onclick: () => { if (BR.activa) { apagarBrujula(); textosBrujula(); } else encenderBrujula(); } }),
+    h('p', { class: 'nota', text: 'La flecha azul apunta hacia donde va el viento; la marca roja es el norte. Sostén el iPhone plano, lejos de los motores del dron, del carro o de fundas con imán.' }),
+    h('p', { class: 'nota', text: 'El pronóstico usa el norte geográfico y la brújula el magnético: en Arequipa la diferencia es de pocos grados.' }));
+  abrirDialogo(d);
+  textosBrujula();
+}
+
 // ---------- diálogo de ajustes ----------
 function abrirAjustes() {
   const d = $('#dlgAjustes'), c = $('#dlgAjustesCont'), p = P();
@@ -1040,20 +1218,34 @@ function iniciar() {
   $('#lugarBtn').addEventListener('click', abrirLugares);
   $('#refrescar').addEventListener('click', () => actualizar({ gpsFresco: true }));
   $('#ajustesBtn').addEventListener('click', abrirAjustes);
-  for (const d of [$('#dlgLugares'), $('#dlgAjustes')]) {
+  for (const d of [$('#dlgLugares'), $('#dlgAjustes'), $('#dlgBrujula')]) {
     d.addEventListener('click', (e) => { if (e.target === d) cerrarDialogo(d); });
   }
+  $('#dlgBrujula').addEventListener('close', apagarBrujula);
   document.addEventListener('pointerdown', (e) => {
     for (const g of document.querySelectorAll('.graf')) if (g._ocultar && !g.contains(e.target)) g._ocultar();
   });
   let rt = null;
   window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(render, 200); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') autoRefrescar(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') autoRefrescar();
+    else if (BR.activa) { apagarBrujula(); textosBrujula(); }
+  });
   setInterval(() => { if (document.visibilityState === 'visible' && !S.cargando) render(); }, 5 * 60e3);
   render();
   if (S.lugar === 'gps' && !S.gps) actualizar({ gpsFresco: true });
   else autoRefrescar();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    const habia = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!habia) return;
+      const b = $('#nuevaVersion'); b.textContent = '';
+      b.append(h('span', { text: 'Hay una versión nueva de la app.' }),
+        h('button', { class: 'mini', type: 'button', text: 'Actualizar', onclick: () => location.reload() }));
+      b.hidden = false;
+    });
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
+  }
 }
 iniciar();
 })();
